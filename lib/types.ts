@@ -130,3 +130,40 @@ export interface DownloadUrlResponse {
   filename: string;
   expires_in: number;
 }
+// --- Assistant (agent) ------------------------------------------------------
+// Mirrors backend_contract.md section 8.
+
+export interface AssistantContextItem {
+  message_id: string;
+  sender: string;
+  text: string;
+  timestamp: string;
+}
+
+export interface AssistantQueryRequest {
+  peer_username: string;
+  question: string;
+  message_context?: AssistantContextItem[];
+}
+
+export interface AssistantQueryResponse {
+  run_id: string;
+  conversation_id: string;
+  response: string;
+}
+
+/** Client-side record of one agent run, shown in the agent console. */
+export interface AgentRun {
+  id: string;
+  peer: string;
+  question: string;
+  status: "running" | "done" | "error" | "cancelled";
+  startedAt: number;
+  finishedAt?: number;
+  /** number of chat messages sent as message_context (0 = none) */
+  contextCount: number;
+  response?: string;
+  serverRunId?: string;
+  error?: string;
+  errorStatus?: number;
+}

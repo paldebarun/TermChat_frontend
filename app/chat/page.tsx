@@ -10,14 +10,18 @@ import { encryptMessage } from "@/lib/crypto";
 
 import {
   ApiError,
+  ASSISTANT_TIMEOUT_MS,
   deleteUpload,
   getDownloadUrl,
   getPublicKeyOf,
+  queryAssistant,
 } from "@/lib/api";
 
 import * as store from "@/lib/storage";
 
 import type {
+  AgentRun,
+  AssistantContextItem,
   AttachmentRef,
   StoredMessage,
   WireMessageIn,
@@ -30,7 +34,11 @@ import {
 
 import { Sidebar } from "@/components/Sidebar";
 import { ChatWindow } from "@/components/ChatWindow";
+import { AgentConsole } from "@/components/AgentConsole";
 import { CenteredScreen } from "@/components/TerminalWindow";
+
+const SHARE_CONTEXT_KEY = "termchat.agent.shareContext";
+const CONTEXT_MESSAGES = 20;
 
 type KeyStatus = "idle" | "loading" | "ready" | "error";
 
@@ -62,6 +70,25 @@ export default function ChatPage() {
 
   const [peerKeyStatus, setPeerKeyStatus] =
     useState<KeyStatus>("idle");
+
+  const [agentRuns, setAgentRuns] = useState<
+    Record<string, AgentRun[]>
+  >({});
+  const [consoleOpen, setConsoleOpen] = useState(false);
+  const [shareContext, setShareContext] = useState(false);
+  const aborters = useRef<Map<string, AbortController>>(
+    new Map()
+  );
+
+  useEffect(() => {
+    try {
+      setShareContext(
+        localStorage.getItem(SHARE_CONTEXT_KEY) === "1"
+      );
+    } catch {
+      // storage unavailable
+    }
+  }, []);
 
   const [systemLines, setSystemLines] = useState<string[]>([]);
 
@@ -1019,6 +1046,186 @@ export default function ChatPage() {
 
   /*
    * --------------------------------------------------------------------
+   * AGENT CONSOLE
+   * --------------------------------------------------------------------
+   */
+
+  const updateRun = useCallback(
+    (peer: string, id: string, patch: Partial<AgentRun>) => {
+      setAgentRuns((prev) => ({
+        ...prev,
+        [peer]: (prev[peer] ?? []).map((r) =>
+          r.id === id ? { ...r, ...patch } : r
+        ),
+      }));
+    },
+    []
+  );
+
+  const executeRun = useCallback(
+    async (run: AgentRun) => {
+      if (!session) {
+        return;
+      }
+
+      const controller = new AbortController();
+      aborters.current.set(run.id, controller);
+
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, ASSISTANT_TIMEOUT_MS);
+
+      try {
+        let message_context: AssistantContextItem[] | undefined;
+
+        if (shareContext) {
+          const history =
+            messagesByPeer[run.peer] ??
+            store.loadMessages(session.username, run.peer);
+
+          message_context = history
+            .filter((m) => m.text.trim() && !m.failed)
+            .slice(-CONTEXT_MESSAGES)
+            .map((m) => ({
+              message_id: m.id,
+              sender: m.self ? session.username : m.peer,
+              text: m.text,
+              timestamp: m.timestamp,
+            }));
+        }
+
+        updateRun(run.peer, run.id, {
+          contextCount: message_context?.length ?? 0,
+        });
+
+        const token = await getFreshAccessToken();
+
+        const result = await queryAssistant(
+          token,
+          {
+            peer_username: run.peer,
+            question: run.question,
+            ...(message_context?.length
+              ? { message_context }
+              : {}),
+          },
+          controller.signal
+        );
+
+        updateRun(run.peer, run.id, {
+          status: "done",
+          response: result.response,
+          serverRunId: result.run_id,
+          finishedAt: Date.now(),
+        });
+      } catch (error) {
+        if (controller.signal.aborted && !timedOut) {
+          updateRun(run.peer, run.id, {
+            status: "cancelled",
+            finishedAt: Date.now(),
+          });
+        } else if (timedOut) {
+          updateRun(run.peer, run.id, {
+            status: "error",
+            errorStatus: 504,
+            finishedAt: Date.now(),
+          });
+        } else {
+          updateRun(run.peer, run.id, {
+            status: "error",
+            error:
+              error instanceof Error
+                ? error.message
+                : "request failed",
+            errorStatus:
+              error instanceof ApiError
+                ? error.status
+                : undefined,
+            finishedAt: Date.now(),
+          });
+        }
+      } finally {
+        clearTimeout(timer);
+        aborters.current.delete(run.id);
+      }
+    },
+    [session, shareContext, messagesByPeer, getFreshAccessToken, updateRun]
+  );
+
+  const handleAskAssistant = useCallback(
+    (question: string) => {
+      if (!activePeer) {
+        return;
+      }
+
+      setConsoleOpen(true);
+
+      if (!question) {
+        return;
+      }
+
+      const run: AgentRun = {
+        id: uuidv4(),
+        peer: activePeer,
+        question,
+        status: "running",
+        startedAt: Date.now(),
+        contextCount: 0,
+      };
+
+      setAgentRuns((prev) => ({
+        ...prev,
+        [activePeer]: [...(prev[activePeer] ?? []), run],
+      }));
+
+      void executeRun(run);
+    },
+    [activePeer, executeRun]
+  );
+
+  const handleCancelRun = useCallback((id: string) => {
+    aborters.current.get(id)?.abort();
+  }, []);
+
+  const handleRetryRun = useCallback(
+    (id: string) => {
+      if (!activePeer) {
+        return;
+      }
+
+      const old = (agentRuns[activePeer] ?? []).find(
+        (r) => r.id === id
+      );
+
+      if (!old) {
+        return;
+      }
+
+      handleAskAssistant(old.question);
+    },
+    [activePeer, agentRuns, handleAskAssistant]
+  );
+
+  const handleToggleShareContext = useCallback(
+    (value: boolean) => {
+      setShareContext(value);
+
+      try {
+        localStorage.setItem(
+          SHARE_CONTEXT_KEY,
+          value ? "1" : "0"
+        );
+      } catch {
+        // storage unavailable
+      }
+    },
+    []
+  );
+
+  /*
+   * --------------------------------------------------------------------
    * ACTIVE MESSAGES
    * --------------------------------------------------------------------
    */
@@ -1108,6 +1315,11 @@ export default function ChatPage() {
           onDownloadAttachment={
             handleDownloadAttachment
           }
+          onAskAssistant={handleAskAssistant}
+          consoleOpen={consoleOpen}
+          onToggleConsole={() =>
+            setConsoleOpen((open) => !open)
+          }
         />
 
         {systemLines.length > 0 && (
@@ -1130,6 +1342,26 @@ export default function ChatPage() {
           </div>
         )}
       </div>
+
+      {consoleOpen && (
+        <AgentConsole
+          peer={activePeer}
+          runs={
+            activePeer
+              ? agentRuns[activePeer] ?? []
+              : []
+          }
+          shareContext={shareContext}
+          onToggleShareContext={handleToggleShareContext}
+          onCancel={handleCancelRun}
+          onRetry={handleRetryRun}
+          onAsk={handleAskAssistant}
+          onSendToChat={(text) => {
+            void handleSend(text).catch(() => {});
+          }}
+          onClose={() => setConsoleOpen(false)}
+        />
+      )}
     </div>
   );
 }

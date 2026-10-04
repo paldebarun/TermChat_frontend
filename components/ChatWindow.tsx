@@ -46,6 +46,9 @@ export function ChatWindow({
   onRemoveAttachment,
   onRetryAttachment,
   onDownloadAttachment,
+  onAskAssistant,
+  consoleOpen,
+  onToggleConsole,
 }: {
   peer: string | null;
   username: string;
@@ -75,6 +78,12 @@ export function ChatWindow({
     fileId: string,
     filename: string
   ) => void;
+
+  onAskAssistant: (question: string) => void;
+
+  consoleOpen: boolean;
+
+  onToggleConsole: () => void;
 }) {
   const [draft, setDraft] = useState("");
 
@@ -124,6 +133,18 @@ export function ChatWindow({
     e.preventDefault();
 
     const text = draft.trim();
+
+    /*
+     * "@assistant <question>" is routed to the agent console and is
+     * never sent as a chat message.
+     */
+    const ask = /^@assist[ae]nt\b\s*([\s\S]*)$/i.exec(text);
+
+    if (ask) {
+      setDraft("");
+      onAskAssistant(ask[1].trim());
+      return;
+    }
 
     const attachment =
       pendingAttachment?.attachmentRef;
@@ -192,8 +213,26 @@ export function ChatWindow({
 
         <div
           className="dim"
-          style={{ fontSize: 11 }}
+          style={{
+            fontSize: 11,
+            display: "flex",
+            gap: 10,
+            alignItems: "center",
+          }}
         >
+          <button
+            type="button"
+            className="btn-quiet"
+            onClick={onToggleConsole}
+            style={
+              consoleOpen
+                ? { color: "var(--accent)" }
+                : undefined
+            }
+          >
+            agent
+          </button>
+
           {peerKeyStatus === "loading" &&
             "resolving public key…"}
 
@@ -342,7 +381,7 @@ export function ChatWindow({
             setDraft(e.target.value)
           }
           placeholder={
-            "type a message…"
+            "type a message… (@assistant to ask the agent)"
           }
           rows={2}
           disabled={sending}

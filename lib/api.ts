@@ -8,6 +8,8 @@ import type {
   CompletePartInfo,
   UploadedFileOut,
   DownloadUrlResponse,
+  AssistantQueryRequest,
+  AssistantQueryResponse,
 } from "./types";
 
 const API_URL =
@@ -247,4 +249,26 @@ export function getDownloadUrl(
       },
     }
   ).then((r) => handle<DownloadUrlResponse>(r));
+}
+/* -------------------------------------------------------------------------- */
+/* Assistant                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/** Backend allows ~30s queueing + ~120s run; the contract asks for >= 160s. */
+export const ASSISTANT_TIMEOUT_MS = 160_000;
+
+export function queryAssistant(
+  accessToken: string,
+  data: AssistantQueryRequest,
+  signal?: AbortSignal
+): Promise<AssistantQueryResponse> {
+  return fetch(`${API_URL}/assistant/query`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(data),
+    signal,
+  }).then((r) => handle<AssistantQueryResponse>(r));
 }

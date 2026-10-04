@@ -225,3 +225,123 @@ button {
 .dim {
   color: var(--fg-dim);
 }
+
+/* agent console (right sidebar) */
+.agent-console {
+  width: 380px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  background: var(--bg-raised);
+  min-height: 100vh;
+  max-height: 100vh;
+}
+.agent-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+.agent-run {
+  margin-bottom: 18px;
+}
+.agent-msg {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.agent-msg-user {
+  justify-content: flex-end;
+}
+.agent-bubble {
+  max-width: 85%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 12px 12px 2px 12px;
+  padding: 6px 10px;
+  color: var(--self);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.agent-avatar {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.agent-content {
+  flex: 1;
+  min-width: 0;
+}
+.agent-meta {
+  font-size: 11px;
+  margin: 4px 0;
+}
+.agent-answer {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+.agent-thinking {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-dots i {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: agent-blink 1.2s infinite both;
+}
+.agent-dots i:nth-child(2) { animation-delay: 0.2s; }
+.agent-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes agent-blink {
+  0%, 80%, 100% { opacity: 0.2; }
+  40% { opacity: 1; }
+}
+.agent-input {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+  border-top: 1px solid var(--line);
+  padding: 10px 12px;
+}
+.agent-input textarea {
+  flex: 1;
+  resize: none;
+  background: var(--bg);
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font: inherit;
+}
+.agent-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.agent-running {
+  color: var(--warn);
+}
+.agent-ok {
+  color: var(--accent);
+}
+.agent-warn {
+  color: var(--warn);
+}
+.agent-consent {
+  border-top: 1px solid var(--line);
+  padding: 10px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
