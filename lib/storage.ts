@@ -10,7 +10,7 @@
  * that's an inherent, correct property of real end-to-end encryption,
  * not a bug. The UI surfaces this explicitly (see app/login/page.tsx).
  */
-import type { Session, StoredMessage } from "./types";
+import type { AgentRun, Session, StoredMessage } from "./types";
 
 const NS = "termchat";
 
@@ -19,6 +19,7 @@ const k = {
   privkey: (user: string) => `${NS}:${user}:privkey`,
   contacts: (user: string) => `${NS}:${user}:contacts`,
   messages: (user: string, peer: string) => `${NS}:${user}:msgs:${peer.toLowerCase()}`,
+  runs: (user: string, peer: string) => `${NS}:${user}:agent:${peer.toLowerCase()}`,
 };
 
 function safeParse<T>(raw: string | null, fallback: T): T {
@@ -69,7 +70,25 @@ export function loadMessages(username: string, peer: string): StoredMessage[] {
 }
 export function appendMessage(username: string, peer: string, msg: StoredMessage) {
   const list = loadMessages(username, peer);
+  if (list.some((m) => m.id === msg.id)) return list;
   list.push(msg);
   localStorage.setItem(k.messages(username, peer), JSON.stringify(list));
   return list;
+}
+
+const MAX_STORED_RUNS = 50;
+
+/** Assistant console history for one peer. Runs that were in flight when the
+ * page closed can never finish, so they come back as cancelled. */
+export function loadRuns(username: string, peer: string): AgentRun[] {
+  return safeParse<AgentRun[]>(localStorage.getItem(k.runs(username, peer)), []).map((r) =>
+    r.status === "running" ? { ...r, status: "cancelled", finishedAt: r.finishedAt ?? Date.now() } : r
+  );
+}
+export function saveRuns(username: string, peer: string, runs: AgentRun[]) {
+  try {
+    localStorage.setItem(k.runs(username, peer), JSON.stringify(runs.slice(-MAX_STORED_RUNS)));
+  } catch {
+    // storage full or unavailable - history just won't survive a reload
+  }
 }

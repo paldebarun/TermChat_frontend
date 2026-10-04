@@ -345,3 +345,18 @@ button {
   font-size: 12px;
   cursor: pointer;
 }
+
+/* password visibility toggle */
+.pw-wrap {
+  position: relative;
+}
+.pw-wrap .field {
+  padding-right: 56px;
+}
+.pw-toggle {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 11px;
+}

@@ -140,10 +140,17 @@ export interface AssistantContextItem {
   timestamp: string;
 }
 
+/** One earlier turn of the user's own conversation with the assistant. */
+export interface AssistantHistoryItem {
+  role: "user" | "assistant";
+  text: string;
+}
+
 export interface AssistantQueryRequest {
   peer_username: string;
   question: string;
   message_context?: AssistantContextItem[];
+  assistant_history?: AssistantHistoryItem[];
 }
 
 export interface AssistantQueryResponse {
@@ -162,6 +169,8 @@ export interface AgentRun {
   finishedAt?: number;
   /** number of chat messages sent as message_context (0 = none) */
   contextCount: number;
+  /** number of earlier assistant turns sent as assistant_history */
+  historyCount?: number;
   response?: string;
   serverRunId?: string;
   error?: string;

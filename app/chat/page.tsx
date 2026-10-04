@@ -39,6 +39,7 @@ import { CenteredScreen } from "@/components/TerminalWindow";
 
 const SHARE_CONTEXT_KEY = "termchat.agent.shareContext";
 const CONTEXT_MESSAGES = 20;
+const ASSISTANT_HISTORY_RUNS = 6;
 
 type KeyStatus = "idle" | "loading" | "ready" | "error";
 
@@ -79,6 +80,9 @@ export default function ChatPage() {
   const aborters = useRef<Map<string, AbortController>>(
     new Map()
   );
+  // Latest runs, readable from executeRun without making it re-create.
+  const agentRunsRef = useRef<Record<string, AgentRun[]>>({});
+  agentRunsRef.current = agentRuns;
 
   useEffect(() => {
     try {
@@ -507,17 +511,25 @@ export default function ChatPage() {
       /*
        * Update in-memory conversation state.
        */
-      setMessagesByPeer((prev) => ({
-        ...prev,
-        [msg.peer]: [
-          ...(prev[msg.peer] ??
-            store.loadMessages(
-              session.username,
-              msg.peer
-            )),
-          stored,
-        ],
-      }));
+      setMessagesByPeer((prev) => {
+        /*
+         * When the conversation isn't in memory yet, the fallback read
+         * already includes the message persisted above - so dedupe by id.
+         */
+        const base =
+          prev[msg.peer] ??
+          store.loadMessages(
+            session.username,
+            msg.peer
+          );
+
+        return {
+          ...prev,
+          [msg.peer]: base.some((m) => m.id === stored.id)
+            ? base
+            : [...base, stored],
+        };
+      });
 
       /*
        * Automatically add sender to contacts.
@@ -1050,6 +1062,32 @@ export default function ChatPage() {
    * --------------------------------------------------------------------
    */
 
+  // Restore the assistant console history when a conversation is opened.
+  useEffect(() => {
+    if (!session || !activePeer) {
+      return;
+    }
+
+    setAgentRuns((prev) =>
+      prev[activePeer]
+        ? prev
+        : { ...prev, [activePeer]: store.loadRuns(session.username, activePeer) }
+    );
+  }, [session, activePeer]);
+
+  // Persist finished runs so follow-ups still have context after a reload.
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    for (const [peer, runs] of Object.entries(agentRuns)) {
+      if (runs.length && runs.every((r) => r.status !== "running")) {
+        store.saveRuns(session.username, peer, runs);
+      }
+    }
+  }, [session, agentRuns]);
+
   const updateRun = useCallback(
     (peer: string, id: string, patch: Partial<AgentRun>) => {
       setAgentRuns((prev) => ({
@@ -1096,8 +1134,18 @@ export default function ChatPage() {
             }));
         }
 
+        // Earlier finished turns of the user's chat with the assistant.
+        const assistant_history = (agentRunsRef.current[run.peer] ?? [])
+          .filter((r) => r.id !== run.id && r.status === "done" && r.response)
+          .slice(-ASSISTANT_HISTORY_RUNS)
+          .flatMap((r) => [
+            { role: "user" as const, text: r.question },
+            { role: "assistant" as const, text: r.response as string },
+          ]);
+
         updateRun(run.peer, run.id, {
           contextCount: message_context?.length ?? 0,
+          historyCount: assistant_history.length / 2,
         });
 
         const token = await getFreshAccessToken();
@@ -1109,6 +1157,9 @@ export default function ChatPage() {
             question: run.question,
             ...(message_context?.length
               ? { message_context }
+              : {}),
+            ...(assistant_history.length
+              ? { assistant_history }
               : {}),
           },
           controller.signal

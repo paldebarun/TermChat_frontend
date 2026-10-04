@@ -122,6 +122,8 @@ function RunCard({
               seconds(elapsed)}
             {run.contextCount > 0 &&
               ` · ${run.contextCount} msgs shared`}
+            {(run.historyCount ?? 0) > 0 &&
+              ` · ${run.historyCount} prior turns`}
           </div>
 
           <div className="agent-actions">
@@ -295,10 +297,11 @@ export function AgentConsole({
             onToggleShareContext(e.target.checked)
           }
         />{" "}
-        share last 20 messages with the assistant
+        share last 20 chat messages with the assistant
         <div className="dim" style={{ fontSize: 11 }}>
+          the assistant always remembers your earlier questions and its answers in this console.{" "}
           {shareContext
-            ? "decrypted messages are sent to the server and the LLM provider with each question. The server may ignore them if disabled."
+            ? "decrypted chat messages are sent to the server and the LLM provider with each question. The server may ignore them if disabled."
             : "off: the assistant cannot see chat text (messages are end-to-end encrypted), only shared files."}
         </div>
       </label>

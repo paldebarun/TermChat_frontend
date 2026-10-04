@@ -15,6 +15,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
 
   async function onSubmit(e: React.FormEvent) {
@@ -110,14 +111,25 @@ export default function LoginPage() {
             <div className="dim" style={{ fontSize: 12, marginBottom: 4 }}>
               <span className="prompt">$</span> password
             </div>
-            <input
-              className="field"
-              type="password"
-              value={password}
-              required
-              autoComplete="current-password"
-              onChange={(e) => setPassword(e.target.value)}
-            />
+            <div className="pw-wrap">
+              <input
+                className="field"
+                type={showPassword ? "text" : "password"}
+                value={password}
+                required
+                autoComplete="current-password"
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn-quiet pw-toggle"
+                aria-label={showPassword ? "hide password" : "show password"}
+                aria-pressed={showPassword}
+                onClick={() => setShowPassword((v) => !v)}
+              >
+                {showPassword ? "hide" : "show"}
+              </button>
+            </div>
           </label>
 
           {error && <div className="err-text" style={{ marginBottom: 12 }}>! {error}</div>}

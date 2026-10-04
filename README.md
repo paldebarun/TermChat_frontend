@@ -17,7 +17,12 @@ Python client.
   looks a username up via `GET /users/{username}/public-key` and remembers
   it locally), and local message history (also client-only, since the
   backend has no history endpoint — it only queues undelivered messages
-  briefly for offline delivery).
+  briefly for offline delivery). Incoming messages are de-duplicated by
+  `message_id`, both in memory and in local storage.
+- **Also does**: resumable multipart file attachments (browser uploads
+  straight to MinIO via presigned URLs — note that file contents are **not**
+  end-to-end encrypted), an `@assistant` agent console (see below), and a
+  show/hide toggle on the password fields of the login and signup pages.
 - **Doesn't**: recover messages if you log in on a device that never had
   your private key. That's inherent to real E2E encryption, not a bug — the
   server never has your private key, so nobody but this browser could ever
@@ -59,21 +64,24 @@ is running first — `docker compose up --build` in that repo, by default at
 app/
   layout.tsx          root layout, wires AuthProvider + global styles
   page.tsx            "/" — redirects to /chat or /login
-  login/page.tsx       login form + "key missing on this device" recovery flow
-  register/page.tsx    signup form, generates & uploads the RSA keypair
-  chat/page.tsx         main chat screen: sidebar + conversation + websocket wiring
+  login/page.tsx       login form (password show/hide) + "key missing on this device" recovery flow
+  register/page.tsx    signup form (password show/hide), generates & uploads the RSA keypair
+  chat/page.tsx         main chat screen: sidebar + conversation + agent console + websocket wiring
   globals.css          terminal theme (CRT scanlines, monospace, phosphor palette)
 lib/
   api.ts               REST calls to the FastAPI backend
   crypto.ts             Web Crypto implementation of the RSA-OAEP + AES-256-GCM scheme
-  storage.ts             localStorage helpers (session, private key, contacts, history)
+  storage.ts             localStorage helpers (session, private key, contacts, message + agent-run history)
   auth-context.tsx       React context: session, tokens, refresh-on-expiry, keys
+  uploadManager.ts        resumable multipart upload (parallel parts, retries, progress)
   useWebSocket.ts         websocket connect/reconnect/decrypt hook
   types.ts                shared TypeScript types matching the backend's Pydantic schemas
 components/
   TerminalWindow.tsx      shared terminal window chrome
   Sidebar.tsx             contact list + connection status + logout
-  ChatWindow.tsx          message log + composer
+  ChatWindow.tsx          message log + composer (routes `@assistant` to the agent console)
+  Attachment.tsx          attachment chip: upload progress / download
+  AgentConsole.tsx        right-hand ChatGPT-style assistant panel
 ```
 
 ## Notes
@@ -87,3 +95,25 @@ components/
 - The websocket auto-reconnects (with a fresh access token, refreshing via
   the refresh token if needed) if the connection drops or the access token
   expires mid-session.
+
+## Agent console
+
+Type `@assistant <question>` (`@assistent` also works) in the message box to
+ask the chat-scoped AI assistant (`POST /assistant/query`). The text is not
+sent as a chat message; a ChatGPT-style panel opens on the right showing your
+question as a bubble, a "thinking…" indicator while the run is in progress,
+and the plain-text answer. The panel has its own input for follow-ups, and
+each answer has **send to chat** (shares it as a normal encrypted message),
+**copy**, **retry**, and **stop** while running.
+
+- Requests use a 160 s client timeout (backend allows ~30 s queueing + ~120 s
+  run); 404 / 422 / 429 / 502 / 504 are mapped to readable messages.
+- By default the assistant sees only files shared in the conversation.
+  Enabling "share last 20 messages" sends **decrypted** messages to the
+  server and LLM provider with each question (`message_context`); the server
+  may ignore them if the feature is disabled on its side.
+- Follow-ups are made coherent by sending your last 6 finished
+  question/answer pairs as `assistant_history`. Runs are kept in localStorage
+  per conversation; runs that were in flight when the page closed come back
+  as cancelled.
+- Answers are visible only to you and are not stored as chat messages.

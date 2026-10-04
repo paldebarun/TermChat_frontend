@@ -102,20 +102,36 @@ function Field({
   type?: string;
   autoFocus?: boolean;
 }) {
+  const [show, setShow] = useState(false);
+  const isPassword = type === "password";
+
   return (
     <label style={{ display: "block", marginBottom: 12 }}>
       <div className="dim" style={{ fontSize: 12, marginBottom: 4 }}>
         <span className="prompt">$</span> {label}
       </div>
-      <input
-        className="field"
-        type={type}
-        value={value}
-        autoFocus={autoFocus}
-        required
-        onChange={(e) => onChange(e.target.value)}
-        autoComplete={type === "password" ? "new-password" : "off"}
-      />
+      <div className="pw-wrap">
+        <input
+          className="field"
+          type={isPassword && show ? "text" : type}
+          value={value}
+          autoFocus={autoFocus}
+          required
+          onChange={(e) => onChange(e.target.value)}
+          autoComplete={isPassword ? "new-password" : "off"}
+        />
+        {isPassword && (
+          <button
+            type="button"
+            className="btn-quiet pw-toggle"
+            aria-label={show ? `hide ${label}` : `show ${label}`}
+            aria-pressed={show}
+            onClick={() => setShow((v) => !v)}
+          >
+            {show ? "hide" : "show"}
+          </button>
+        )}
+      </div>
     </label>
   );
 }
