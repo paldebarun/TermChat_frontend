@@ -6,15 +6,22 @@ import { v4 as uuidv4 } from "uuid";
 
 import { useAuth } from "@/lib/auth-context";
 import { useWebSocket } from "@/lib/useWebSocket";
-import { encryptMessage } from "@/lib/crypto";
+import { encryptGroupMessage, encryptMessage } from "@/lib/crypto";
 
 import {
   ApiError,
   ASSISTANT_TIMEOUT_MS,
+  addGroupMembers,
+  createGroup,
   deleteUpload,
   getDownloadUrl,
+  getGroup,
   getPublicKeyOf,
+  listGroups,
   queryAssistant,
+  queryGroupAssistant,
+  removeGroupMember,
+  renameGroup,
 } from "@/lib/api";
 
 import * as store from "@/lib/storage";
@@ -23,7 +30,11 @@ import type {
   AgentRun,
   AssistantContextItem,
   AttachmentRef,
+  Group,
+  GroupSummary,
   StoredMessage,
+  WireGroupEvent,
+  WireGroupMessageIn,
   WireMessageIn,
 } from "@/lib/types";
 
@@ -35,6 +46,7 @@ import {
 import { Sidebar } from "@/components/Sidebar";
 import { ChatWindow } from "@/components/ChatWindow";
 import { AgentConsole } from "@/components/AgentConsole";
+import { GroupPanel } from "@/components/GroupPanel";
 import { CenteredScreen } from "@/components/TerminalWindow";
 
 const SHARE_CONTEXT_KEY = "termchat.agent.shareContext";
@@ -56,7 +68,36 @@ export default function ChatPage() {
   const router = useRouter();
 
   const [contacts, setContacts] = useState<string[]>([]);
-  const [activePeer, setActivePeer] = useState<string | null>(null);
+  const [activePeer, setActivePeerState] = useState<string | null>(null);
+
+  const [groups, setGroups] = useState<GroupSummary[]>([]);
+  const [activeGroupId, setActiveGroupIdState] = useState<string | null>(null);
+  const [groupDetail, setGroupDetail] = useState<Group | null>(null);
+  // Key for per-conversation state (messages, assistant runs).
+  const convKey = activeGroupId
+    ? store.groupKey(activeGroupId)
+    : activePeer;
+  const [groupPanelOpen, setGroupPanelOpen] = useState(false);
+  const [groupBusy, setGroupBusy] = useState(false);
+  const [groupError, setGroupError] = useState<string | null>(null);
+  const activeGroupIdRef = useRef<string | null>(null);
+  activeGroupIdRef.current = activeGroupId;
+
+  // A conversation is either a direct chat or a group, never both.
+  const setActivePeer = useCallback((peer: string | null) => {
+    setActivePeerState(peer);
+    if (peer) {
+      setActiveGroupIdState(null);
+      setGroupDetail(null);
+    }
+  }, []);
+  const setActiveGroupId = useCallback((id: string | null) => {
+    setActiveGroupIdState(id);
+    setGroupDetail(null);
+    setGroupError(null);
+    setGroupPanelOpen(false);
+    if (id) setActivePeerState(null);
+  }, []);
 
   const [messagesByPeer, setMessagesByPeer] = useState<
     Record<string, StoredMessage[]>
@@ -93,8 +134,6 @@ export default function ChatPage() {
       // storage unavailable
     }
   }, []);
-
-  const [systemLines, setSystemLines] = useState<string[]>([]);
 
   const [pendingAttachment, setPendingAttachment] =
     useState<PendingAttachment | null>(null);
@@ -165,10 +204,7 @@ export default function ChatPage() {
    */
 
   const onSystem = useCallback((line: string) => {
-    setSystemLines((prev) => [
-      ...prev.slice(-4),
-      line,
-    ]);
+    console.warn(`[termchat] ${line}`);
   }, []);
 
   /*
@@ -474,6 +510,262 @@ export default function ChatPage() {
 
   /*
    * --------------------------------------------------------------------
+   * GROUPS
+   * --------------------------------------------------------------------
+   */
+
+  const refreshGroups = useCallback(async () => {
+    try {
+      const token = await getFreshAccessToken();
+      setGroups(await listGroups(token));
+    } catch {
+      onSystem("could not load groups");
+    }
+  }, [getFreshAccessToken, onSystem]);
+
+  const refreshGroupDetail = useCallback(
+    async (id: string): Promise<Group | null> => {
+      try {
+        const token = await getFreshAccessToken();
+        const g = await getGroup(token, id);
+        if (activeGroupIdRef.current === id) {
+          setGroupDetail(g);
+        }
+        return g;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          // we're no longer a member
+          setGroups((prev) => prev.filter((x) => x.id !== id));
+          if (activeGroupIdRef.current === id) {
+            setActiveGroupId(null);
+          }
+        }
+        return null;
+      }
+    },
+    [getFreshAccessToken, setActiveGroupId]
+  );
+
+  const pushGroupMessage = useCallback(
+    (groupId: string, stored: StoredMessage) => {
+      if (!session) {
+        return;
+      }
+
+      const key = store.groupKey(groupId);
+
+      store.appendMessage(session.username, key, stored);
+
+      setMessagesByPeer((prev) => {
+        const base =
+          prev[key] ?? store.loadMessages(session.username, key);
+
+        return {
+          ...prev,
+          [key]: base.some((m) => m.id === stored.id)
+            ? base
+            : [...base, stored],
+        };
+      });
+    },
+    [session]
+  );
+
+  const onGroupIncoming = useCallback(
+    (msg: {
+      groupId: string;
+      sender: string;
+      text: string;
+      timestamp: string;
+      id: string;
+      attachment?: AttachmentRef;
+    }) => {
+      if (!session) {
+        return;
+      }
+
+      const self = msg.sender.toLowerCase() === session.username.toLowerCase();
+      const key = store.groupKey(msg.groupId);
+
+      // Already stored (our own send echoed back to this/another tab).
+      const known =
+        store.loadMessages(session.username, key).some((m) => m.id === msg.id);
+
+      pushGroupMessage(msg.groupId, {
+        id: msg.id,
+        peer: key,
+        sender: msg.sender,
+        self,
+        text: msg.text,
+        timestamp: msg.timestamp,
+        ...(msg.attachment ? { attachment: msg.attachment } : {}),
+      });
+
+      if (!self && !known && activeGroupIdRef.current !== msg.groupId) {
+        setUnread((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
+      }
+    },
+    [session, pushGroupMessage]
+  );
+
+  const onGroupEvent = useCallback(
+    (evt: WireGroupEvent) => {
+      if (!session) {
+        return;
+      }
+
+      const me = session.username.toLowerCase();
+      const target = evt.username ?? "";
+      const actor = evt.actor;
+
+      const text =
+        evt.event === "created"
+          ? `${actor} created the group`
+          : evt.event === "renamed"
+            ? `${actor} renamed the group`
+            : evt.event === "member_added"
+              ? `${actor} added ${target}`
+              : evt.event === "member_removed"
+                ? `${actor} removed ${target}`
+                : `${target || actor} left`;
+
+      const removedMe =
+        (evt.event === "member_removed" || evt.event === "member_left") &&
+        target.toLowerCase() === me;
+
+      if (removedMe) {
+        setGroups((prev) => prev.filter((g) => g.id !== evt.group_id));
+        if (activeGroupIdRef.current === evt.group_id) {
+          setActiveGroupId(null);
+        }
+        return;
+      }
+
+      pushGroupMessage(evt.group_id, {
+        id: uuidv4(),
+        peer: store.groupKey(evt.group_id),
+        self: false,
+        system: true,
+        text,
+        timestamp: new Date().toISOString(),
+      });
+
+      void refreshGroups();
+
+      if (activeGroupIdRef.current === evt.group_id) {
+        void refreshGroupDetail(evt.group_id);
+      }
+    },
+    [session, pushGroupMessage, refreshGroups, refreshGroupDetail, setActiveGroupId]
+  );
+
+  const handleCreateGroup = useCallback(
+    async (name: string, members: string[]): Promise<string | null> => {
+      if (!session) {
+        return "not signed in";
+      }
+
+      try {
+        const token = await getFreshAccessToken();
+        const group = await createGroup(token, name, members);
+
+        await refreshGroups();
+        setActiveGroupId(group.id);
+
+        return null;
+      } catch (error) {
+        return error instanceof ApiError
+          ? error.message
+          : "could not create group";
+      }
+    },
+    [session, getFreshAccessToken, refreshGroups, setActiveGroupId]
+  );
+
+  const runGroupAction = useCallback(
+    async (action: (token: string, id: string) => Promise<unknown>) => {
+      const id = activeGroupIdRef.current;
+
+      if (!id) {
+        return false;
+      }
+
+      setGroupBusy(true);
+      setGroupError(null);
+
+      try {
+        await action(await getFreshAccessToken(), id);
+        await Promise.all([refreshGroups(), refreshGroupDetail(id)]);
+        return true;
+      } catch (error) {
+        setGroupError(
+          error instanceof ApiError ? error.message : "request failed"
+        );
+        return false;
+      } finally {
+        setGroupBusy(false);
+      }
+    },
+    [getFreshAccessToken, refreshGroups, refreshGroupDetail]
+  );
+
+  const handleRenameGroup = useCallback(
+    (name: string) => void runGroupAction((t, id) => renameGroup(t, id, name)),
+    [runGroupAction]
+  );
+
+  const handleAddGroupMembers = useCallback(
+    (usernames: string[]) =>
+      void runGroupAction((t, id) => addGroupMembers(t, id, usernames)),
+    [runGroupAction]
+  );
+
+  const handleRemoveGroupMember = useCallback(
+    (username: string) =>
+      void runGroupAction((t, id) => removeGroupMember(t, id, username)),
+    [runGroupAction]
+  );
+
+  const handleLeaveGroup = useCallback(async () => {
+    if (!session) {
+      return;
+    }
+
+    const id = activeGroupIdRef.current;
+
+    if (!id) {
+      return;
+    }
+
+    const ok = await runGroupAction((t, gid) =>
+      removeGroupMember(t, gid, session.username)
+    );
+
+    if (ok) {
+      setGroups((prev) => prev.filter((g) => g.id !== id));
+      setActiveGroupId(null);
+    }
+  }, [session, runGroupAction, setActiveGroupId]);
+
+  // Load the member list whenever a group is opened.
+  useEffect(() => {
+    if (!session || !activeGroupId) {
+      return;
+    }
+
+    void refreshGroupDetail(activeGroupId);
+    setUnread((prev) => ({ ...prev, [store.groupKey(activeGroupId)]: 0 }));
+
+    setMessagesByPeer((prev) => {
+      const key = store.groupKey(activeGroupId);
+      return prev[key]
+        ? prev
+        : { ...prev, [key]: store.loadMessages(session.username, key) };
+    });
+  }, [session, activeGroupId, refreshGroupDetail]);
+
+  /*
+   * --------------------------------------------------------------------
    * WEBSOCKET
    * --------------------------------------------------------------------
    */
@@ -577,8 +869,21 @@ export default function ChatPage() {
     privateKeyPem,
     getFreshAccessToken,
     onIncoming,
+    onGroupIncoming,
+    onGroupEvent,
     onSystem,
   });
+
+  // Group events are live-only, so re-sync the list on every (re)connect.
+  useEffect(() => {
+    if (status === "open") {
+      void refreshGroups();
+
+      if (activeGroupIdRef.current) {
+        void refreshGroupDetail(activeGroupIdRef.current);
+      }
+    }
+  }, [status, refreshGroups, refreshGroupDetail]);
 
   /*
    * --------------------------------------------------------------------
@@ -879,7 +1184,7 @@ export default function ChatPage() {
         text: string,
         attachment?: AttachmentRef
       ) => {
-        if (!session || !activePeer) {
+        if (!session || (!activePeer && !activeGroupId)) {
           return;
         }
 
@@ -904,72 +1209,106 @@ export default function ChatPage() {
           new Date().toISOString();
 
         try {
-          /*
-           * Resolve recipient public key.
-           */
-          let publicKey =
-            publicKeyCache.current.get(
-              activePeer.toLowerCase()
+          let wire: WireMessageIn | WireGroupMessageIn;
+          let convKey: string;
+
+          if (activeGroupId) {
+            /*
+             * Group: re-fetch members so the key list is current, then
+             * wrap one AES key per member that has a public key
+             * (including ourselves, so our other tabs get it too).
+             */
+            const token = await getFreshAccessToken();
+            const group = await getGroup(token, activeGroupId);
+
+            setGroupDetail((cur) =>
+              cur?.id === group.id ? group : cur
             );
 
-          if (!publicKey) {
-            const token =
-              await getFreshAccessToken();
+            const keys: Record<string, string> = {};
 
-            const user =
-              await getPublicKeyOf(
-                token,
-                activePeer
-              );
+            for (const member of group.members) {
+              if (member.public_key) {
+                keys[member.username] = member.public_key;
+              }
+            }
 
-            if (!user.public_key) {
-              throw new Error(
-                "recipient has no public key"
+            const skipped = group.members.filter((m) => !m.public_key);
+
+            if (skipped.length) {
+              onSystem(
+                `no public key yet for ${skipped.map((m) => m.username).join(", ")} - they won't receive this`
               );
             }
 
-            publicKey =
-              user.public_key;
+            const encrypted = await encryptGroupMessage(keys, trimmedText);
 
-            publicKeyCache.current.set(
-              activePeer.toLowerCase(),
-              publicKey
-            );
+            wire = {
+              type: "group_message",
+              message_id: messageId,
+              group_id: activeGroupId,
+              timestamp,
+              ...encrypted,
+              ...(attachment ? { attachment } : {}),
+            };
+
+            convKey = store.groupKey(activeGroupId);
+          } else {
+            /*
+             * Resolve recipient public key.
+             */
+            let publicKey =
+              publicKeyCache.current.get(
+                activePeer!.toLowerCase()
+              );
+
+            if (!publicKey) {
+              const token =
+                await getFreshAccessToken();
+
+              const user =
+                await getPublicKeyOf(
+                  token,
+                  activePeer!
+                );
+
+              if (!user.public_key) {
+                throw new Error(
+                  "recipient has no public key"
+                );
+              }
+
+              publicKey =
+                user.public_key;
+
+              publicKeyCache.current.set(
+                activePeer!.toLowerCase(),
+                publicKey
+              );
+            }
+
+            /*
+             * Encrypt message content client-side. For attachment-only
+             * messages we encrypt an empty string. Attachment bytes
+             * themselves are NOT end-to-end encrypted (see contract).
+             */
+            const encrypted =
+              await encryptMessage(
+                publicKey,
+                trimmedText
+              );
+
+            wire = {
+              type: "message",
+              message_id: messageId,
+              recipient: activePeer!,
+              timestamp,
+              ...encrypted,
+              ...(attachment ? { attachment } : {}),
+            };
+
+            convKey = activePeer!;
           }
-
-          /*
-           * Encrypt message content client-side.
-           *
-           * The backend never receives plaintext.
-           *
-           * For attachment-only messages we encrypt an empty string.
-           *
-           * IMPORTANT:
-           * The attachment itself is currently referenced by file_id.
-           * If strict E2EE attachments are required, the file must also
-           * be encrypted client-side before upload. The current upload
-           * pipeline stores the uploaded bytes as-is.
-           */
-          const encrypted =
-            await encryptMessage(
-              publicKey,
-              trimmedText
-            );
-
-          const wire: WireMessageIn = {
-            type: "message",
-            message_id: messageId,
-            recipient: activePeer,
-            timestamp,
-
-            ...encrypted,
-
-            ...(attachment
-              ? {
-                  attachment,
-                }
-              : {}),
-          };
 
           /*
            * Send ciphertext + attachment metadata through WebSocket.
@@ -982,32 +1321,29 @@ export default function ChatPage() {
            */
           const stored: StoredMessage = {
             id: messageId,
-            peer: activePeer,
+            peer: convKey,
             self: true,
             text: trimmedText,
             timestamp,
             failed: !delivered,
             attachment,
+            ...(activeGroupId ? { sender: session.username } : {}),
           };
 
           store.appendMessage(
             session.username,
-            activePeer,
+            convKey,
             stored
           );
 
           setMessagesByPeer((prev) => ({
             ...prev,
-            [activePeer]: [
-              ...(prev[activePeer] ?? []),
+            [convKey]: [
+              ...(prev[convKey] ?? []),
               stored,
             ],
           }));
 
-          /*
-           * The message is persisted locally even when the WebSocket
-           * is currently disconnected.
-           */
           if (!delivered) {
             onSystem(
               "not connected - message saved locally but not sent"
@@ -1039,7 +1375,7 @@ export default function ChatPage() {
           );
 
           onSystem(
-            `could not encrypt/send message to ${activePeer}`
+            `could not encrypt/send message to ${activeGroupId ? "group" : activePeer}`
           );
 
           throw error;
@@ -1050,6 +1386,7 @@ export default function ChatPage() {
       [
         session,
         activePeer,
+        activeGroupId,
         getFreshAccessToken,
         sendEncrypted,
         onSystem,
@@ -1064,16 +1401,16 @@ export default function ChatPage() {
 
   // Restore the assistant console history when a conversation is opened.
   useEffect(() => {
-    if (!session || !activePeer) {
+    if (!session || !convKey) {
       return;
     }
 
     setAgentRuns((prev) =>
-      prev[activePeer]
+      prev[convKey]
         ? prev
-        : { ...prev, [activePeer]: store.loadRuns(session.username, activePeer) }
+        : { ...prev, [convKey]: store.loadRuns(session.username, convKey) }
     );
-  }, [session, activePeer]);
+  }, [session, convKey]);
 
   // Persist finished runs so follow-ups still have context after a reload.
   useEffect(() => {
@@ -1124,11 +1461,11 @@ export default function ChatPage() {
             store.loadMessages(session.username, run.peer);
 
           message_context = history
-            .filter((m) => m.text.trim() && !m.failed)
+            .filter((m) => m.text.trim() && !m.failed && !m.system)
             .slice(-CONTEXT_MESSAGES)
             .map((m) => ({
               message_id: m.id,
-              sender: m.self ? session.username : m.peer,
+              sender: m.self ? session.username : (m.sender ?? m.peer),
               text: m.text,
               timestamp: m.timestamp,
             }));
@@ -1150,20 +1487,27 @@ export default function ChatPage() {
 
         const token = await getFreshAccessToken();
 
-        const result = await queryAssistant(
-          token,
-          {
-            peer_username: run.peer,
-            question: run.question,
-            ...(message_context?.length
-              ? { message_context }
-              : {}),
-            ...(assistant_history.length
-              ? { assistant_history }
-              : {}),
-          },
-          controller.signal
-        );
+        const extras = {
+          question: run.question,
+          ...(message_context?.length
+            ? { message_context }
+            : {}),
+          ...(assistant_history.length
+            ? { assistant_history }
+            : {}),
+        };
+
+        const result = run.groupId
+          ? await queryGroupAssistant(
+              token,
+              { group_id: run.groupId, ...extras },
+              controller.signal
+            )
+          : await queryAssistant(
+              token,
+              { peer_username: run.peer, ...extras },
+              controller.signal
+            );
 
         updateRun(run.peer, run.id, {
           status: "done",
@@ -1207,7 +1551,7 @@ export default function ChatPage() {
 
   const handleAskAssistant = useCallback(
     (question: string) => {
-      if (!activePeer) {
+      if (!convKey) {
         return;
       }
 
@@ -1219,7 +1563,8 @@ export default function ChatPage() {
 
       const run: AgentRun = {
         id: uuidv4(),
-        peer: activePeer,
+        peer: convKey,
+        ...(activeGroupId ? { groupId: activeGroupId } : {}),
         question,
         status: "running",
         startedAt: Date.now(),
@@ -1228,12 +1573,12 @@ export default function ChatPage() {
 
       setAgentRuns((prev) => ({
         ...prev,
-        [activePeer]: [...(prev[activePeer] ?? []), run],
+        [convKey]: [...(prev[convKey] ?? []), run],
       }));
 
       void executeRun(run);
     },
-    [activePeer, executeRun]
+    [convKey, activeGroupId, executeRun]
   );
 
   const handleCancelRun = useCallback((id: string) => {
@@ -1242,11 +1587,11 @@ export default function ChatPage() {
 
   const handleRetryRun = useCallback(
     (id: string) => {
-      if (!activePeer) {
+      if (!convKey) {
         return;
       }
 
-      const old = (agentRuns[activePeer] ?? []).find(
+      const old = (agentRuns[convKey] ?? []).find(
         (r) => r.id === id
       );
 
@@ -1256,7 +1601,7 @@ export default function ChatPage() {
 
       handleAskAssistant(old.question);
     },
-    [activePeer, agentRuns, handleAskAssistant]
+    [convKey, agentRuns, handleAskAssistant]
   );
 
   const handleToggleShareContext = useCallback(
@@ -1284,11 +1629,14 @@ export default function ChatPage() {
   const activeMessages =
     useMemo(
       () =>
-        activePeer
-          ? messagesByPeer[activePeer] ?? []
-          : [],
+        activeGroupId
+          ? messagesByPeer[store.groupKey(activeGroupId)] ?? []
+          : activePeer
+            ? messagesByPeer[activePeer] ?? []
+            : [],
       [
         activePeer,
+        activeGroupId,
         messagesByPeer,
       ]
     );
@@ -1338,6 +1686,10 @@ export default function ChatPage() {
         onLogout={logout}
         addError={addError}
         adding={adding}
+        groups={groups}
+        activeGroupId={activeGroupId}
+        onSelectGroup={setActiveGroupId}
+        onCreateGroup={handleCreateGroup}
       />
 
       <div
@@ -1349,6 +1701,20 @@ export default function ChatPage() {
         }}
       >
         <ChatWindow
+          group={
+            activeGroupId
+              ? groupDetail ?? {
+                  id: activeGroupId,
+                  name:
+                    groups.find((g) => g.id === activeGroupId)?.name ?? "…",
+                  created_by: "",
+                  created_at: "",
+                  members: [],
+                }
+              : null
+          }
+          groupPanelOpen={groupPanelOpen}
+          onToggleGroupPanel={() => setGroupPanelOpen((open) => !open)}
           peer={activePeer}
           username={session.username}
           messages={activeMessages}
@@ -1372,34 +1738,36 @@ export default function ChatPage() {
             setConsoleOpen((open) => !open)
           }
         />
-
-        {systemLines.length > 0 && (
-          <div
-            style={{
-              borderTop:
-                "1px solid var(--line)",
-              padding: "6px 16px",
-              fontSize: 11,
-            }}
-            className="dim"
-          >
-            {systemLines.map(
-              (line, index) => (
-                <div key={index}>
-                  ~ {line}
-                </div>
-              )
-            )}
-          </div>
-        )}
       </div>
+
+      {groupPanelOpen && groupDetail && (
+        <GroupPanel
+          key={groupDetail.id}
+          group={groupDetail}
+          me={session.username}
+          busy={groupBusy}
+          error={groupError}
+          onRename={handleRenameGroup}
+          onAddMembers={handleAddGroupMembers}
+          onRemoveMember={handleRemoveGroupMember}
+          onLeave={handleLeaveGroup}
+          onClose={() => setGroupPanelOpen(false)}
+        />
+      )}
 
       {consoleOpen && (
         <AgentConsole
-          peer={activePeer}
+          peer={convKey}
+          groupName={
+            activeGroupId
+              ? (groupDetail?.name ??
+                groups.find((g) => g.id === activeGroupId)?.name ??
+                "group")
+              : null
+          }
           runs={
-            activePeer
-              ? agentRuns[activePeer] ?? []
+            convKey
+              ? agentRuns[convKey] ?? []
               : []
           }
           shareContext={shareContext}

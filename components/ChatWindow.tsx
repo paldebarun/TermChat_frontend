@@ -8,6 +8,7 @@ import {
 
 import type {
   AttachmentRef,
+  Group,
   StoredMessage,
 } from "@/lib/types";
 
@@ -35,6 +36,9 @@ function formatTime(iso: string): string {
 }
 
 export function ChatWindow({
+  group,
+  groupPanelOpen,
+  onToggleGroupPanel,
   peer,
   username,
   messages,
@@ -50,6 +54,10 @@ export function ChatWindow({
   consoleOpen,
   onToggleConsole,
 }: {
+  /** when set, this is a group conversation and `peer` is ignored */
+  group: Group | null;
+  groupPanelOpen: boolean;
+  onToggleGroupPanel: () => void;
   peer: string | null;
   username: string;
   messages: StoredMessage[];
@@ -97,9 +105,9 @@ export function ChatWindow({
     bottomRef.current?.scrollIntoView({
       block: "end",
     });
-  }, [messages.length, peer]);
+  }, [messages.length, peer, group?.id]);
 
-  if (!peer) {
+  if (!peer && !group) {
     return (
       <div
         style={{
@@ -117,7 +125,7 @@ export function ChatWindow({
           }}
         >
 {`+----------------------------------------+
-|  select or add a contact to begin       |
+|  select a contact or group to begin      |
 |  every message is encrypted in this     |
 |  browser before it ever reaches the     |
 |  server - RSA-OAEP + AES-256-GCM        |
@@ -206,9 +214,18 @@ export function ChatWindow({
       >
         <div>
           <span className="prompt">
-            chat with
+            {group ? "group" : "chat with"}
           </span>{" "}
-          {peer}
+          {group ? `# ${group.name}` : peer}
+          {group && group.members.length > 0 && (
+            <span
+              className="dim"
+              style={{ fontSize: 11 }}
+            >
+              {" "}
+              · {group.members.length} members
+            </span>
+          )}
         </div>
 
         <div
@@ -220,30 +237,62 @@ export function ChatWindow({
             alignItems: "center",
           }}
         >
-          <button
-            type="button"
-            className="btn-quiet"
-            onClick={onToggleConsole}
-            style={
-              consoleOpen
-                ? { color: "var(--accent)" }
-                : undefined
-            }
-          >
-            agent
-          </button>
+          {group ? (
+            <>
+              <button
+                type="button"
+                className="btn-quiet"
+                onClick={onToggleConsole}
+                style={
+                  consoleOpen
+                    ? { color: "var(--accent)" }
+                    : undefined
+                }
+              >
+                agent
+              </button>
+              <button
+                type="button"
+                className="btn-quiet"
+                onClick={onToggleGroupPanel}
+                style={
+                  groupPanelOpen
+                    ? { color: "var(--accent)" }
+                    : undefined
+                }
+              >
+                members
+              </button>
+              e2e encrypted
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn-quiet"
+                onClick={onToggleConsole}
+                style={
+                  consoleOpen
+                    ? { color: "var(--accent)" }
+                    : undefined
+                }
+              >
+                agent
+              </button>
 
-          {peerKeyStatus === "loading" &&
-            "resolving public key…"}
+              {peerKeyStatus === "loading" &&
+                "resolving public key…"}
 
-          {peerKeyStatus === "error" && (
-            <span className="err-text">
-              public key unavailable
-            </span>
+              {peerKeyStatus === "error" && (
+                <span className="err-text">
+                  public key unavailable
+                </span>
+              )}
+
+              {peerKeyStatus === "ready" &&
+                "e2e encrypted"}
+            </>
           )}
-
-          {peerKeyStatus === "ready" &&
-            "e2e encrypted"}
         </div>
       </div>
 
@@ -256,7 +305,20 @@ export function ChatWindow({
           padding: "16px 20px",
         }}
       >
-        {messages.map((message) => (
+        {messages.map((message) =>
+          message.system ? (
+            <div
+              key={message.id}
+              className="dim"
+              style={{
+                fontSize: 11,
+                textAlign: "center",
+                margin: "4px 0 12px",
+              }}
+            >
+              — {message.text} —
+            </div>
+          ) : (
           <div
             key={message.id}
             style={{
@@ -273,6 +335,17 @@ export function ChatWindow({
                 maxWidth: "75%",
               }}
             >
+              {group && !message.self && (
+                <div
+                  style={{
+                    fontSize: 11,
+                    marginBottom: 3,
+                    color: "var(--accent-dim)",
+                  }}
+                >
+                  {message.sender ?? message.peer}
+                </div>
+              )}
               <div
                 style={{
                   border:
@@ -314,13 +387,19 @@ export function ChatWindow({
                       : "left",
                 }}
               >
+                {message.failed && (
+                  <span className="err-text">
+                    ! not delivered{" "}
+                  </span>
+                )}
                 {formatTime(
                   message.timestamp
                 )}
               </div>
             </div>
           </div>
-        ))}
+          )
+        )}
 
         <div ref={bottomRef} />
       </div>
@@ -381,7 +460,9 @@ export function ChatWindow({
             setDraft(e.target.value)
           }
           placeholder={
-            "type a message… (@assistant to ask the agent)"
+            group
+              ? "message the group… (@assistant to ask the agent)"
+              : "type a message… (@assistant to ask the agent)"
           }
           rows={2}
           disabled={sending}

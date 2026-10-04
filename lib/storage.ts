@@ -92,3 +92,7 @@ export function saveRuns(username: string, peer: string, runs: AgentRun[]) {
     // storage full or unavailable - history just won't survive a reload
   }
 }
+
+/* Group conversations reuse the message store under a `g:<groupId>` key.
+ * Usernames can't contain ':' so this never collides with a peer. */
+export const groupKey = (groupId: string) => `g:${groupId}`;

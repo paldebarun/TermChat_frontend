@@ -167,6 +167,7 @@ function RunCard({
 
 export function AgentConsole({
   peer,
+  groupName,
   runs,
   shareContext,
   onToggleShareContext,
@@ -176,7 +177,10 @@ export function AgentConsole({
   onAsk,
   onClose,
 }: {
+  /** conversation key (username or g:<id>); null = nothing open */
   peer: string | null;
+  /** set when the open conversation is a group */
+  groupName?: string | null;
   runs: AgentRun[];
   shareContext: boolean;
   onToggleShareContext: (value: boolean) => void;
@@ -241,9 +245,10 @@ export function AgentConsole({
               &lt;question&gt; in the message box.
             </p>
             <p>
-              scope: this conversation with {peer} and the
-              files shared in it. Answers are shown only
-              to you.
+              {groupName
+                ? `scope: the group "${groupName}" - every member's messages (if shared) and files sent by you or addressed to you.`
+                : `scope: this conversation with ${peer} and the files shared in it.`}{" "}
+              Answers are shown only to you.
             </p>
             <p>
               files you just sent may take a moment to
@@ -301,7 +306,9 @@ export function AgentConsole({
         <div className="dim" style={{ fontSize: 11 }}>
           the assistant always remembers your earlier questions and its answers in this console.{" "}
           {shareContext
-            ? "decrypted chat messages are sent to the server and the LLM provider with each question. The server may ignore them if disabled."
+            ? groupName
+              ? "decrypted messages from ALL members of this group (not just yours) are sent to the server and the LLM provider with each question. The server may ignore them if disabled."
+              : "decrypted chat messages are sent to the server and the LLM provider with each question. The server may ignore them if disabled."
             : "off: the assistant cannot see chat text (messages are end-to-end encrypted), only shared files."}
         </div>
       </label>

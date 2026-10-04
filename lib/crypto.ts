@@ -9,7 +9,7 @@
  * Private keys generated here NEVER leave this browser - they are kept
  * in localStorage (see lib/storage.ts) and are never sent over the wire.
  */
-import type { EncryptedPayload } from "./types";
+import type { EncryptedPayload, GroupEncryptedPayload } from "./types";
 
 const RSA_ALG = { name: "RSA-OAEP", hash: "SHA-256" };
 const TAG_LENGTH_BYTES = 16;
@@ -107,6 +107,47 @@ export async function encryptMessage(
     encrypted_key: bufToBase64(encryptedKey),
     nonce: bufToBase64(nonce.buffer),
     tag: bufToBase64(tag.buffer),
+  };
+}
+
+/**
+ * Encrypt once for a group: one AES key / ciphertext, with the AES key
+ * RSA-wrapped separately for every entry of `memberPublicKeys`
+ * (username -> PEM). Include yourself so your other tabs get the message.
+ */
+export async function encryptGroupMessage(
+  memberPublicKeys: Record<string, string>,
+  plaintext: string
+): Promise<GroupEncryptedPayload> {
+  const aesKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, [
+    "encrypt",
+  ]);
+  const rawAesKey = await crypto.subtle.exportKey("raw", aesKey);
+  const nonce = crypto.getRandomValues(new Uint8Array(NONCE_LENGTH_BYTES));
+
+  const cipherWithTag = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: nonce, tagLength: TAG_LENGTH_BYTES * 8 },
+      aesKey,
+      new TextEncoder().encode(plaintext)
+    )
+  );
+  const ciphertext = cipherWithTag.slice(0, cipherWithTag.length - TAG_LENGTH_BYTES);
+  const tag = cipherWithTag.slice(cipherWithTag.length - TAG_LENGTH_BYTES);
+
+  const keys = await Promise.all(
+    Object.entries(memberPublicKeys).map(async ([recipient, pem]) => {
+      const pub = await importPublicKey(pem);
+      const wrapped = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, pub, rawAesKey);
+      return { recipient, encrypted_key: bufToBase64(wrapped) };
+    })
+  );
+
+  return {
+    encrypted_content: bufToBase64(ciphertext.buffer),
+    nonce: bufToBase64(nonce.buffer),
+    tag: bufToBase64(tag.buffer),
+    keys,
   };
 }
 

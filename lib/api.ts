@@ -10,6 +10,9 @@ import type {
   DownloadUrlResponse,
   AssistantQueryRequest,
   AssistantQueryResponse,
+  AssistantGroupQueryRequest,
+  Group,
+  GroupSummary,
 } from "./types";
 
 const API_URL =
@@ -268,6 +271,91 @@ export function queryAssistant(
       "Content-Type": "application/json",
       Authorization: `Bearer ${accessToken}`,
     },
+    body: JSON.stringify(data),
+    signal,
+  }).then((r) => handle<AssistantQueryResponse>(r));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Groups                                                                     */
+/* -------------------------------------------------------------------------- */
+
+function authed(accessToken: string, json = false): HeadersInit {
+  return {
+    ...(json ? { "Content-Type": "application/json" } : {}),
+    Authorization: `Bearer ${accessToken}`,
+  };
+}
+
+export function createGroup(
+  accessToken: string,
+  name: string,
+  members: string[]
+): Promise<Group> {
+  return fetch(`${API_URL}/groups`, {
+    method: "POST",
+    headers: authed(accessToken, true),
+    body: JSON.stringify({ name, members }),
+  }).then((r) => handle<Group>(r));
+}
+
+export function listGroups(accessToken: string): Promise<GroupSummary[]> {
+  return fetch(`${API_URL}/groups`, {
+    headers: authed(accessToken),
+  }).then((r) => handle<GroupSummary[]>(r));
+}
+
+export function getGroup(accessToken: string, groupId: string): Promise<Group> {
+  return fetch(`${API_URL}/groups/${groupId}`, {
+    headers: authed(accessToken),
+  }).then((r) => handle<Group>(r));
+}
+
+export function renameGroup(
+  accessToken: string,
+  groupId: string,
+  name: string
+): Promise<Group> {
+  return fetch(`${API_URL}/groups/${groupId}`, {
+    method: "PATCH",
+    headers: authed(accessToken, true),
+    body: JSON.stringify({ name }),
+  }).then((r) => handle<Group>(r));
+}
+
+export function addGroupMembers(
+  accessToken: string,
+  groupId: string,
+  usernames: string[]
+): Promise<Group> {
+  return fetch(`${API_URL}/groups/${groupId}/members`, {
+    method: "POST",
+    headers: authed(accessToken, true),
+    body: JSON.stringify({ usernames }),
+  }).then((r) => handle<Group>(r));
+}
+
+/** Remove a member (admin) or leave the group (username = yourself). 204. */
+export async function removeGroupMember(
+  accessToken: string,
+  groupId: string,
+  username: string
+): Promise<void> {
+  const res = await fetch(
+    `${API_URL}/groups/${groupId}/members/${encodeURIComponent(username)}`,
+    { method: "DELETE", headers: authed(accessToken) }
+  );
+  if (!res.ok) await handle<never>(res);
+}
+
+export function queryGroupAssistant(
+  accessToken: string,
+  data: AssistantGroupQueryRequest,
+  signal?: AbortSignal
+): Promise<AssistantQueryResponse> {
+  return fetch(`${API_URL}/assistant/group-query`, {
+    method: "POST",
+    headers: authed(accessToken, true),
     body: JSON.stringify(data),
     signal,
   }).then((r) => handle<AssistantQueryResponse>(r));

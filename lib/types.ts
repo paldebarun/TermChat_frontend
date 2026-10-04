@@ -56,6 +56,10 @@ export interface StoredMessage {
   timestamp: string;
   failed?: boolean;
   attachment?: AttachmentRef;
+  /** group messages only: who wrote it (for self messages, our username) */
+  sender?: string;
+  /** centered info line (membership change etc.), not a chat bubble */
+  system?: boolean;
 }
 
 export interface Session {
@@ -153,6 +157,13 @@ export interface AssistantQueryRequest {
   assistant_history?: AssistantHistoryItem[];
 }
 
+export interface AssistantGroupQueryRequest {
+  group_id: string;
+  question: string;
+  message_context?: AssistantContextItem[];
+  assistant_history?: AssistantHistoryItem[];
+}
+
 export interface AssistantQueryResponse {
   run_id: string;
   conversation_id: string;
@@ -162,7 +173,10 @@ export interface AssistantQueryResponse {
 /** Client-side record of one agent run, shown in the agent console. */
 export interface AgentRun {
   id: string;
+  /** conversation key: a username, or `g:<groupId>` for a group */
   peer: string;
+  /** set when the run targets a group (POST /assistant/group-query) */
+  groupId?: string;
   question: string;
   status: "running" | "done" | "error" | "cancelled";
   startedAt: number;
@@ -175,4 +189,66 @@ export interface AgentRun {
   serverRunId?: string;
   error?: string;
   errorStatus?: number;
+}
+
+// --- Groups (backend_contract.md 1.1.0) -------------------------------------
+
+export interface GroupMember {
+  username: string;
+  role: "admin" | "member";
+  public_key: string | null;
+  joined_at: string;
+}
+
+export interface Group {
+  id: string;
+  name: string;
+  created_by: string;
+  created_at: string;
+  members: GroupMember[];
+}
+
+export interface GroupSummary {
+  id: string;
+  name: string;
+  created_at: string;
+  member_count: number;
+  my_role: "admin" | "member";
+}
+
+export interface GroupKeyEntry {
+  recipient: string;
+  encrypted_key: string;
+}
+
+export interface GroupEncryptedPayload {
+  encrypted_content: string;
+  nonce: string;
+  tag: string;
+  keys: GroupKeyEntry[];
+}
+
+export interface WireGroupMessageIn extends GroupEncryptedPayload {
+  type: "group_message";
+  message_id: string;
+  group_id: string;
+  timestamp: string;
+  attachment?: AttachmentRef;
+}
+
+export interface WireGroupMessageOut extends EncryptedPayload {
+  type: "group_message";
+  message_id: string;
+  group_id: string;
+  sender: string;
+  timestamp: string;
+  attachment?: AttachmentRef | null;
+}
+
+export interface WireGroupEvent {
+  type: "group_event";
+  group_id: string;
+  event: "created" | "renamed" | "member_added" | "member_removed" | "member_left";
+  actor: string;
+  username?: string | null;
 }

@@ -3,7 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { wsUrl } from "./api";
 import { decryptMessage } from "./crypto";
-import type { WireError, WireMessageIn, WireMessageOut } from "./types";
+import type {
+  AttachmentRef,
+  WireError,
+  WireGroupEvent,
+  WireGroupMessageIn,
+  WireGroupMessageOut,
+  WireMessageIn,
+  WireMessageOut,
+} from "./types";
 
 export type ConnStatus = "connecting" | "open" | "closed" | "error";
 
@@ -18,6 +26,15 @@ interface UseWsArgs {
   id: string;
   attachment?: WireMessageOut["attachment"];
 }) => void;
+  onGroupIncoming: (msg: {
+    groupId: string;
+    sender: string;
+    text: string;
+    timestamp: string;
+    id: string;
+    attachment?: AttachmentRef;
+  }) => void;
+  onGroupEvent: (evt: WireGroupEvent) => void;
   onSystem: (line: string) => void;
 }
 
@@ -26,6 +43,8 @@ export function useWebSocket({
   privateKeyPem,
   getFreshAccessToken,
   onIncoming,
+  onGroupIncoming,
+  onGroupEvent,
   onSystem,
 }: UseWsArgs) {
   const [status, setStatus] = useState<ConnStatus>("connecting");
@@ -35,6 +54,10 @@ export function useWebSocket({
   const onSystemRef = useRef(onSystem);
   onIncomingRef.current = onIncoming;
   onSystemRef.current = onSystem;
+  const onGroupIncomingRef = useRef(onGroupIncoming);
+  const onGroupEventRef = useRef(onGroupEvent);
+  onGroupIncomingRef.current = onGroupIncoming;
+  onGroupEventRef.current = onGroupEvent;
 
   // Bumped every time the effect is torn down, so an in-flight connect()
   // from a *previous* mount (e.g. React Strict Mode's dev-only double
@@ -76,7 +99,7 @@ export function useWebSocket({
     };
 
     ws.onmessage = async (ev) => {
-      let data: WireMessageOut | WireError;
+      let data: WireMessageOut | WireGroupMessageOut | WireGroupEvent | WireError;
       try {
         data = JSON.parse(ev.data);
       } catch {
@@ -84,6 +107,26 @@ export function useWebSocket({
       }
       if (data.type === "error") {
         onSystemRef.current(`server: ${data.detail}`);
+        return;
+      }
+      if (data.type === "group_event") {
+        onGroupEventRef.current(data);
+        return;
+      }
+      if (data.type === "group_message") {
+        try {
+          const text = await decryptMessage(privateKeyPem, data);
+          onGroupIncomingRef.current({
+            groupId: data.group_id,
+            sender: data.sender,
+            text,
+            timestamp: data.timestamp,
+            id: data.message_id,
+            attachment: data.attachment ?? undefined,
+          });
+        } catch {
+          onSystemRef.current(`failed to decrypt a group message from ${data.sender}`);
+        }
         return;
       }
       if (data.type === "message") {
@@ -133,7 +176,7 @@ export function useWebSocket({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connect]);
 
-  const sendEncrypted = useCallback((payload: WireMessageIn) => {
+  const sendEncrypted = useCallback((payload: WireMessageIn | WireGroupMessageIn) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       return false;
